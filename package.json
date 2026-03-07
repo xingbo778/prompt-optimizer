@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "cli": "tsx src/cli.ts",
+    "start": "node --env-file=.env --import tsx/esm src/server.ts",
+    "cli": "node --env-file=.env --import tsx/esm src/cli.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/lib/db/migrate.ts"
   },

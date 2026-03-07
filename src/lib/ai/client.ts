@@ -19,9 +19,11 @@ export function getClient(): OpenAI {
 export async function chat(
   systemPrompt: string,
   userMessage: string,
-  options?: { maxTokens?: number; temperature?: number }
+  options?: { maxTokens?: number; temperature?: number; role?: "generate" | "judge" }
 ): Promise<string> {
-  const model = process.env.LLM_MODEL || DEFAULT_MODEL;
+  const model = options?.role === "judge"
+    ? (process.env.JUDGE_MODEL || process.env.LLM_MODEL || DEFAULT_MODEL)
+    : (process.env.LLM_MODEL || DEFAULT_MODEL);
   const response = await getClient().chat.completions.create({
     model,
     max_tokens: options?.maxTokens ?? 4096,

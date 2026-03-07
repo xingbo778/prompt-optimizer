@@ -1,10 +1,15 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { v4 as uuid } from "uuid";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 import { db, schema } from "./lib/db/index.js";
 import { eq, desc } from "drizzle-orm";
 import { mutate, getInitialStrategies } from "./lib/engine/mutator.js";
-import { evaluate, type TestCase } from "./lib/engine/evaluator.js";
+import { evaluate, evaluateBatch, type TestCase } from "./lib/engine/evaluator.js";
 import { tagsToInstructions, getAllTags } from "./lib/engine/feedback.js";
 import {
   addPrompt,
@@ -20,8 +25,14 @@ import {
 
 const app = new Hono();
 
+// UI
+app.get("/", (c) => {
+  const html = readFileSync(resolve(__dirname, "ui.html"), "utf-8");
+  return c.html(html);
+});
+
 // Health check
-app.get("/", (c) => c.json({ status: "ok", service: "prompt-evolution-system" }));
+app.get("/health", (c) => c.json({ status: "ok", service: "prompt-evolution-system" }));
 
 // ========== Projects ==========
 
@@ -110,50 +121,54 @@ app.post("/api/projects/:id/initialize", async (c) => {
   const tcs = getTestCases(projectId);
   if (tcs.length === 0) return c.json({ error: "Add test cases first" }, 400);
 
-  // Add original
-  const originalId = addPrompt(projectId, originalPrompt, 0, null, "original");
+  try {
+    // Add original
+    const originalId = addPrompt(projectId, originalPrompt, 0, null, "original");
 
-  // Generate variants
-  const strategies = getInitialStrategies();
-  const variants: { id: string; strategy: string }[] = [];
-
-  for (const strategy of strategies) {
-    const content = await mutate({
-      originalPrompt,
-      strategy,
-      existingVariants: [],
+    // Generate variants (parallel)
+    const strategies = getInitialStrategies();
+    const variantContents = await Promise.all(
+      strategies.map((strategy) =>
+        mutate({ originalPrompt, strategy, existingVariants: [] }).then((content) => ({ content, strategy }))
+      )
+    );
+    const variants = variantContents.map(({ content, strategy }) => {
+      const id = addPrompt(projectId, content, 0, originalId, strategy);
+      return { id, content, strategy };
     });
-    const id = addPrompt(projectId, content, 0, originalId, strategy);
-    variants.push({ id, strategy });
+
+    // Evaluate all prompts in parallel
+    const allPrompts = [
+      { id: originalId, content: originalPrompt },
+      ...variants.map((v) => ({ id: v.id, content: v.content })),
+    ];
+    const evalMap = await evaluateBatch(allPrompts, tcs);
+    const results: { id: string; score: number }[] = [];
+
+    for (const [pid, { results: evalResults, avgScore }] of evalMap) {
+      updateScore(pid, avgScore);
+      saveEvaluations(pid, evalResults);
+      results.push({ id: pid, score: avgScore });
+    }
+
+    // Mark top as elite
+    const population = getActivePopulation(projectId);
+    if (population.length > 0) markElite(population[0].id);
+
+    logEvolution(projectId, 0, "initialization", {
+      promptCount: allPrompts.length,
+      testCaseCount: tcs.length,
+    });
+
+    return c.json({
+      generation: 0,
+      prompts: results,
+      leaderboard: getLeaderboard(projectId),
+    });
+  } catch (err: any) {
+    console.error("Initialize error:", err);
+    return c.json({ error: err.message || "Internal error" }, 500);
   }
-
-  // Evaluate all
-  const allIds = [originalId, ...variants.map((v) => v.id)];
-  const results: { id: string; score: number }[] = [];
-
-  for (const pid of allIds) {
-    const prompt = db.select().from(schema.prompts).where(eq(schema.prompts.id, pid)).get()!;
-    const evalResults = await evaluate(prompt.content, tcs);
-    const avgScore = Math.round((evalResults.reduce((s, r) => s + r.score, 0) / evalResults.length) * 100) / 100;
-    updateScore(pid, avgScore);
-    saveEvaluations(pid, evalResults);
-    results.push({ id: pid, score: avgScore });
-  }
-
-  // Mark top as elite
-  const population = getActivePopulation(projectId);
-  if (population.length > 0) markElite(population[0].id);
-
-  logEvolution(projectId, 0, "initialization", {
-    promptCount: allIds.length,
-    testCaseCount: tcs.length,
-  });
-
-  return c.json({
-    generation: 0,
-    prompts: results,
-    leaderboard: getLeaderboard(projectId),
-  });
 });
 
 // ========== Leaderboard ==========
@@ -186,7 +201,6 @@ app.post("/api/projects/:id/evolve", async (c) => {
   const projectId = c.req.param("id");
   const body = await c.req.json();
 
-  // Annotation
   const annotation = {
     tags: body.tags as string[],
     note: body.note as string | undefined,
@@ -197,87 +211,86 @@ app.post("/api/projects/:id/evolve", async (c) => {
     return c.json({ error: "tags are required" }, 400);
   }
 
-  // Save annotation
   const targetPromptId = annotation.promptId || getActivePopulation(projectId)[0]?.id;
   if (!targetPromptId) return c.json({ error: "No prompts in population" }, 400);
 
-  db.insert(schema.annotations)
-    .values({
-      id: uuid(),
-      promptId: targetPromptId,
-      tags: annotation.tags,
-      note: annotation.note ?? null,
-      testCaseId: null,
-      createdAt: new Date(),
-    })
-    .run();
+  try {
+    db.insert(schema.annotations)
+      .values({
+        id: uuid(),
+        promptId: targetPromptId,
+        tags: annotation.tags,
+        note: annotation.note ?? null,
+        testCaseId: null,
+        createdAt: new Date(),
+      })
+      .run();
 
-  const instructions = tagsToInstructions(annotation);
+    const instructions = tagsToInstructions(annotation);
+    const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
+    const config = project.config as any;
+    const tcs = getTestCases(projectId);
 
-  // Get config
-  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get()!;
-  const config = project.config as any;
-  const tcs = getTestCases(projectId);
+    const logs = db
+      .select()
+      .from(schema.evolutionLogs)
+      .where(eq(schema.evolutionLogs.projectId, projectId))
+      .all();
+    const generation = logs.length > 0 ? Math.max(...logs.map((l) => l.generation)) + 1 : 1;
 
-  // Determine generation
-  const logs = db
-    .select()
-    .from(schema.evolutionLogs)
-    .where(eq(schema.evolutionLogs.projectId, projectId))
-    .all();
-  const generation = logs.length > 0 ? Math.max(...logs.map((l) => l.generation)) + 1 : 1;
+    const population = getActivePopulation(projectId);
+    const basePrompt = population[0];
+    const mutationCount = config.mutationsPerRound || 3;
 
-  // Mutate from top prompt
-  const population = getActivePopulation(projectId);
-  const basePrompt = population[0];
-  const mutationCount = config.mutationsPerRound || 3;
+    // Generate mutations (sequential — each sees previous variants to stay diverse)
+    const mutatedContents: { id: string; content: string }[] = [];
+    for (let i = 0; i < mutationCount; i++) {
+      const content = await mutate({
+        originalPrompt: basePrompt.content,
+        optimizationInstructions: instructions,
+        strategy: "targeted",
+        existingVariants: mutatedContents.map((v) => v.content),
+      });
+      const id = addPrompt(projectId, content, generation, basePrompt.id, "targeted");
+      mutatedContents.push({ id, content });
+    }
 
-  const newVariants: { id: string; content: string; score: number }[] = [];
+    // Evaluate all new variants in parallel
+    const evalMap = await evaluateBatch(mutatedContents, tcs);
+    const newVariants: { id: string; content: string; score: number }[] = [];
 
-  for (let i = 0; i < mutationCount; i++) {
-    const content = await mutate({
-      originalPrompt: basePrompt.content,
-      optimizationInstructions: instructions,
-      strategy: "targeted",
-      existingVariants: newVariants.map((v) => v.content),
-    });
-    const id = addPrompt(projectId, content, generation, basePrompt.id, "targeted");
+    for (const { id, content } of mutatedContents) {
+      const { results: evalResults, avgScore } = evalMap.get(id)!;
+      updateScore(id, avgScore);
+      saveEvaluations(id, evalResults);
 
-    // Evaluate
-    const evalResults = await evaluate(content, tcs);
-    const avgScore = Math.round((evalResults.reduce((s, r) => s + r.score, 0) / evalResults.length) * 100) / 100;
-    updateScore(id, avgScore);
-    saveEvaluations(id, evalResults);
-
-    // Check qualification
-    if (!canJoinPopulation(projectId, avgScore, config.topNThreshold || 3)) {
-      db.update(schema.prompts).set({ isActive: false }).where(eq(schema.prompts.id, id)).run();
-      newVariants.push({ id, content, score: avgScore });
-    } else {
+      if (!canJoinPopulation(projectId, avgScore, config.topNThreshold || 3)) {
+        db.update(schema.prompts).set({ isActive: false }).where(eq(schema.prompts.id, id)).run();
+      }
       newVariants.push({ id, content, score: avgScore });
     }
+
+    const eliminated = enforcePopulationLimit(projectId, config.populationSize || 6);
+    const updatedPop = getActivePopulation(projectId);
+    if (updatedPop.length > 0) markElite(updatedPop[0].id);
+
+    logEvolution(projectId, generation, "evolution", {
+      annotationTags: annotation.tags,
+      newVariants: newVariants.length,
+      eliminated: eliminated.length,
+    });
+
+    return c.json({
+      generation,
+      instructions,
+      newVariants: newVariants.map((v) => ({ id: v.id, score: v.score })),
+      eliminated: eliminated.length,
+      leaderboard: getLeaderboard(projectId),
+    });
+  } catch (err: any) {
+    console.error("Evolve error:", err);
+    return c.json({ error: err.message || "Internal error" }, 500);
   }
-
-  // Enforce limit
-  const eliminated = enforcePopulationLimit(projectId, config.populationSize || 6);
-
-  // Update elite
-  const updatedPop = getActivePopulation(projectId);
-  if (updatedPop.length > 0) markElite(updatedPop[0].id);
-
-  logEvolution(projectId, generation, "evolution", {
-    annotationTags: annotation.tags,
-    newVariants: newVariants.length,
-    eliminated: eliminated.length,
-  });
-
-  return c.json({
-    generation,
-    instructions,
-    newVariants: newVariants.map((v) => ({ id: v.id, score: v.score })),
-    eliminated: eliminated.length,
-    leaderboard: getLeaderboard(projectId),
-  });
 });
 
 // ========== Evolution History ==========

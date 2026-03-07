@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Optimizer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e1e4e8; min-height: 100vh; }
+.container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 1.6em; margin-bottom: 20px; color: #58a6ff; }
+h2 { font-size: 1.2em; margin-bottom: 12px; color: #c9d1d9; }
+h3 { font-size: 1em; margin-bottom: 8px; color: #8b949e; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+.tab { padding: 8px 16px; background: transparent; border: none; color: #8b949e; cursor: pointer; border-radius: 6px 6px 0 0; font-size: 14px; }
+.tab.active { background: #21262d; color: #58a6ff; }
+.tab:hover { color: #c9d1d9; }
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+
+input, textarea, select { background: #0d1117; border: 1px solid #30363d; color: #e1e4e8; border-radius: 6px; padding: 8px 12px; width: 100%; font-size: 14px; font-family: inherit; }
+textarea { min-height: 120px; resize: vertical; }
+input:focus, textarea:focus { outline: none; border-color: #58a6ff; }
+
+.btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.15s; }
+.btn-primary { background: #238636; color: #fff; }
+.btn-primary:hover { background: #2ea043; }
+.btn-primary:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+.btn-secondary { background: #21262d; color: #c9d1d9; }
+.btn-secondary:hover { background: #30363d; }
+.btn-danger { background: #da3633; color: #fff; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+.btn-group { display: flex; gap: 8px; margin-top: 12px; }
+
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; margin-bottom: 4px; color: #8b949e; font-size: 13px; }
+
+.tag-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.tag { padding: 4px 10px; border-radius: 16px; font-size: 12px; cursor: pointer; border: 1px solid #30363d; background: #0d1117; color: #8b949e; transition: all 0.15s; user-select: none; }
+.tag.selected { background: #1f6feb33; border-color: #58a6ff; color: #58a6ff; }
+.tag-category { color: #8b949e; font-size: 11px; margin-bottom: 4px; width: 100%; }
+
+.leaderboard-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border-bottom: 1px solid #21262d; }
+.leaderboard-item:last-child { border-bottom: none; }
+.rank { font-size: 20px; font-weight: 700; color: #58a6ff; min-width: 36px; text-align: center; }
+.rank.gold { color: #f0c040; }
+.rank.silver { color: #a0a8b0; }
+.rank.bronze { color: #cd7f32; }
+.prompt-info { flex: 1; min-width: 0; }
+.prompt-meta { display: flex; gap: 12px; font-size: 12px; color: #8b949e; margin-bottom: 4px; }
+.prompt-preview { font-size: 13px; color: #c9d1d9; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.score-badge { font-size: 18px; font-weight: 600; padding: 4px 12px; border-radius: 6px; background: #0d1117; min-width: 60px; text-align: center; }
+.score-high { color: #3fb950; }
+.score-mid { color: #d29922; }
+.score-low { color: #f85149; }
+.elite-badge { background: #f0c04020; color: #f0c040; font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+
+.stats-row { display: flex; gap: 16px; margin-bottom: 16px; }
+.stat { text-align: center; padding: 12px 20px; background: #0d1117; border-radius: 6px; flex: 1; }
+.stat-value { font-size: 24px; font-weight: 700; color: #58a6ff; }
+.stat-label { font-size: 11px; color: #8b949e; margin-top: 2px; }
+
+.log-entry { padding: 8px 12px; border-left: 3px solid #30363d; margin-bottom: 8px; font-size: 13px; }
+.log-entry.init { border-left-color: #58a6ff; }
+.log-entry.evolve { border-left-color: #3fb950; }
+
+.prompt-detail { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; font-size: 13px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; max-height: 400px; overflow-y: auto; }
+
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.modal h2 { margin-bottom: 16px; }
+
+.loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; background: #238636; color: #fff; border-radius: 8px; font-size: 14px; z-index: 200; animation: fadeInUp 0.3s; }
+.toast.error { background: #da3633; }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+.empty { text-align: center; padding: 40px; color: #484f58; }
+
+.eval-dim { display: inline-block; margin-right: 12px; font-size: 12px; }
+.eval-dim span { color: #58a6ff; font-weight: 600; }
+
+.history-gen { font-weight: 600; color: #58a6ff; margin-right: 8px; }
+.history-type { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.history-type.initialization { background: #1f6feb33; color: #58a6ff; }
+.history-type.evolution { background: #23863633; color: #3fb950; }
+
+.project-item { padding: 12px; border: 1px solid #21262d; border-radius: 6px; cursor: pointer; transition: all 0.15s; margin-bottom: 8px; }
+.project-item:hover { border-color: #58a6ff; background: #1f6feb11; }
+.project-item.active { border-color: #58a6ff; background: #1f6feb22; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Prompt Optimizer</h1>
+
+  <!-- Project Selector -->
+  <div class="card" id="project-section">
+    <div class="card-header">
+      <h2>Projects</h2>
+      <button class="btn btn-primary btn-sm" onclick="showNewProject()">+ New Project</button>
+    </div>
+    <div id="project-list"></div>
+  </div>
+
+  <!-- New Project Form -->
+  <div class="modal-overlay" id="new-project-modal">
+    <div class="modal">
+      <h2>Create Project</h2>
+      <div class="form-group"><label>Name</label><input id="np-name" placeholder="e.g. Translation Optimizer"></div>
+      <div class="form-group"><label>Population Size</label><input id="np-pop" type="number" value="6"></div>
+      <div class="form-group"><label>Mutations Per Round</label><input id="np-mut" type="number" value="3"></div>
+      <div class="btn-group">
+        <button class="btn btn-primary" onclick="createProject()">Create</button>
+        <button class="btn btn-secondary" onclick="hideModal('new-project-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Workspace (hidden until project selected) -->
+  <div id="workspace" style="display:none">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('setup')">Setup</button>
+      <button class="tab" onclick="switchTab('leaderboard')">Leaderboard</button>
+      <button class="tab" onclick="switchTab('evolve')">Evolve</button>
+      <button class="tab" onclick="switchTab('history')">History</button>
+    </div>
+
+    <!-- Setup Panel -->
+    <div class="panel active" id="panel-setup">
+      <div class="card">
+        <h2>Original Prompt</h2>
+        <div class="form-group"><textarea id="original-prompt" rows="8" placeholder="Paste your prompt here..."></textarea></div>
+        <h3>Test Cases</h3>
+        <div id="test-cases-list"></div>
+        <div class="card" style="margin-top:8px; border-style:dashed;">
+          <div class="form-group"><label>Input</label><textarea id="tc-input" rows="2" placeholder="Test input..."></textarea></div>
+          <div class="form-group"><label>Expected Output</label><textarea id="tc-expected" rows="2" placeholder="Expected output..."></textarea></div>
+          <div class="form-group"><label>Scoring Criteria</label><input id="tc-criteria" placeholder="e.g. Must be accurate and concise"></div>
+          <button class="btn btn-secondary btn-sm" onclick="addTestCase()">+ Add Test Case</button>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btn-initialize" onclick="initialize()">Initialize Population</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Leaderboard Panel -->
+    <div class="panel" id="panel-leaderboard">
+      <div class="stats-row" id="stats-row"></div>
+      <div class="card">
+        <div class="card-header">
+          <h2>Population Ranking</h2>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-primary btn-sm" onclick="downloadBest()">Download Best .md</button>
+            <button class="btn btn-secondary btn-sm" onclick="downloadAllRanking()">Download All .md</button>
+          </div>
+        </div>
+        <div id="leaderboard-list"></div>
+      </div>
+    </div>
+
+    <!-- Evolve Panel -->
+    <div class="panel" id="panel-evolve">
+      <div class="card">
+        <h2>Annotate & Evolve</h2>
+        <p style="color:#8b949e;font-size:13px;margin-bottom:12px;">Select problem tags to guide the next evolution round.</p>
+        <div id="tag-selector"></div>
+        <div class="form-group"><label>Note (optional)</label><input id="evolve-note" placeholder="Additional feedback..."></div>
+        <div class="form-group">
+          <label>Target Prompt (optional)</label>
+          <select id="evolve-target"><option value="">Top prompt (default)</option></select>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="btn-evolve" onclick="runEvolve()">Run Evolution</button>
+        </div>
+        <div id="evolve-result" style="margin-top:16px;"></div>
+      </div>
+    </div>
+
+    <!-- History Panel -->
+    <div class="panel" id="panel-history">
+      <div class="card">
+        <h2>Evolution History</h2>
+        <div id="history-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Detail Modal -->
+  <div class="modal-overlay" id="prompt-detail-modal">
+    <div class="modal">
+      <div class="card-header">
+        <h2>Prompt Detail</h2>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-primary btn-sm" id="btn-download-prompt" onclick="downloadCurrentPrompt()">Download .md</button>
+          <button class="btn btn-secondary btn-sm" onclick="hideModal('prompt-detail-modal')">Close</button>
+        </div>
+      </div>
+      <div id="prompt-detail-content"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentProject = null;
+let testCases = [];
+let selectedTags = new Set();
+
+// --- Utility ---
+function toast(msg, isError) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (isError ? ' error' : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+async function api(path, opts) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText); }
+  return res.json();
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'leaderboard') loadLeaderboard();
+  if (name === 'history') loadHistory();
+  if (name === 'evolve') { loadLeaderboard(); loadTags(); }
+}
+
+function showNewProject() { document.getElementById('new-project-modal').classList.add('show'); }
+function hideModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function scoreColor(s) { return s >= 75 ? 'score-high' : s >= 50 ? 'score-mid' : 'score-low'; }
+function rankClass(i) { return i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : ''; }
+
+// --- Projects ---
+async function loadProjects() {
+  try {
+    const projects = await api('/api/projects');
+    const list = document.getElementById('project-list');
+    if (projects.length === 0) {
+      list.innerHTML = '<div class="empty">No projects yet. Create one to get started.</div>';
+      return;
+    }
+    list.innerHTML = projects.map(p => `
+      <div class="project-item ${currentProject?.id === p.id ? 'active' : ''}" onclick="selectProject('${p.id}')">
+        <strong>${p.name}</strong>
+        <span style="float:right;color:#8b949e;font-size:12px;">
+          Pop: ${p.stats.populationSize} | Top: ${p.stats.topScore?.toFixed(1) ?? 'N/A'} | Avg: ${p.stats.avgScore?.toFixed(1) ?? 'N/A'}
+        </span>
+      </div>
+    `).join('');
+  } catch(e) { toast('Failed to load projects: ' + e.message, true); }
+}
+
+async function createProject() {
+  const name = document.getElementById('np-name').value.trim();
+  if (!name) return toast('Name is required', true);
+  try {
+    const p = await api('/api/projects', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        name,
+        populationSize: parseInt(document.getElementById('np-pop').value) || 6,
+        mutationsPerRound: parseInt(document.getElementById('np-mut').value) || 3,
+      })
+    });
+    hideModal('new-project-modal');
+    toast('Project created');
+    await loadProjects();
+    selectProject(p.id);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function selectProject(id) {
+  try {
+    currentProject = await api('/api/projects/' + id);
+    document.getElementById('workspace').style.display = 'block';
+    loadProjects();
+    loadTestCases();
+    loadLeaderboard();
+  } catch(e) { toast(e.message, true); }
+}
+
+// --- Test Cases ---
+function addTestCase() {
+  const input = document.getElementById('tc-input').value.trim();
+  const expected = document.getElementById('tc-expected').value.trim();
+  const criteria = document.getElementById('tc-criteria').value.trim();
+  if (!input || !expected || !criteria) return toast('All fields required', true);
+  testCases.push({ input, expectedOutput: expected, scoringCriteria: criteria });
+  document.getElementById('tc-input').value = '';
+  document.getElementById('tc-expected').value = '';
+  document.getElementById('tc-criteria').value = '';
+  renderTestCases();
+  toast('Test case added');
+}
+
+function removeTestCase(i) { testCases.splice(i, 1); renderTestCases(); }
+
+function renderTestCases() {
+  const el = document.getElementById('test-cases-list');
+  el.innerHTML = testCases.map((tc, i) => `
+    <div class="card" style="padding:8px 12px;margin-bottom:4px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:13px;"><strong>#${i+1}</strong> ${tc.input.slice(0,80)}${tc.input.length>80?'...':''}</span>
+        <button class="btn btn-danger btn-sm" onclick="removeTestCase(${i})">x</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadTestCases() {
+  if (!currentProject) return;
+  try {
+    const cases = await api('/api/projects/' + currentProject.id + '/test-cases');
+    if (cases.length > 0) testCases = cases.map(c => ({ input: c.input, expectedOutput: c.expectedOutput || c.expected_output, scoringCriteria: c.scoringCriteria || c.scoring_criteria, id: c.id }));
+    renderTestCases();
+  } catch(e) {}
+}
+
+// --- Initialize ---
+async function initialize() {
+  const prompt = document.getElementById('original-prompt').value.trim();
+  if (!prompt) return toast('Enter a prompt first', true);
+  if (testCases.length === 0) return toast('Add at least one test case', true);
+
+  const btn = document.getElementById('btn-initialize');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loading"></span>Initializing...';
+
+  try {
+    // Upload test cases first
+    const unsaved = testCases.filter(tc => !tc.id);
+    if (unsaved.length > 0) {
+      await api('/api/projects/' + currentProject.id + '/test-cases', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(unsaved)
+      });
+    }
+
+    const result = await api('/api/projects/' + currentProject.id + '/initialize', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ prompt })
+    });
+    toast('Initialized! Generation 0 complete.');
+    switchTabByName('leaderboard');
+    loadLeaderboard();
+  } catch(e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = 'Initialize Population'; }
+}
+
+function switchTabByName(name) {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.remove('active');
+    if (t.textContent.toLowerCase() === name) t.classList.add('active');
+  });
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+}
+
+// --- Leaderboard ---
+async function loadLeaderboard() {
+  if (!currentProject) return;
+  try {
+    const data = await api('/api/projects/' + currentProject.id + '/leaderboard');
+    const statsEl = document.getElementById('stats-row');
+    const s = data.stats;
+    statsEl.innerHTML = `
+      <div class="stat"><div class="stat-value">${s.populationSize}</div><div class="stat-label">Population</div></div>
+      <div class="stat"><div class="stat-value">${s.eliteCount}</div><div class="stat-label">Elites</div></div>
+      <div class="stat"><div class="stat-value">${s.topScore?.toFixed(1) ?? 'N/A'}</div><div class="stat-label">Top Score</div></div>
+      <div class="stat"><div class="stat-value">${s.avgScore?.toFixed(1) ?? 'N/A'}</div><div class="stat-label">Avg Score</div></div>
+    `;
+    const listEl = document.getElementById('leaderboard-list');
+    if (data.prompts.length === 0) {
+      listEl.innerHTML = '<div class="empty">No prompts yet. Initialize first.</div>';
+      return;
+    }
+    listEl.innerHTML = data.prompts.map((p, i) => `
+      <div class="leaderboard-item" style="cursor:pointer;" onclick="showPromptDetail('${p.id}')">
+        <div class="rank ${rankClass(i)}">#${p.rank}</div>
+        <div class="prompt-info">
+          <div class="prompt-meta">
+            <span>Gen ${p.generation}</span>
+            <span>${p.strategy || 'original'}</span>
+            ${p.isElite ? '<span class="elite-badge">ELITE</span>' : ''}
+          </div>
+          <div class="prompt-preview">${escapeHtml(p.preview)}</div>
+        </div>
+        <div class="score-badge ${scoreColor(p.score)}">${p.score?.toFixed(1) ?? 'N/A'}</div>
+      </div>
+    `).join('');
+
+    // Update evolve target dropdown
+    const sel = document.getElementById('evolve-target');
+    sel.innerHTML = '<option value="">Top prompt (default)</option>' +
+      data.prompts.map(p => `<option value="${p.id}">#${p.rank} - ${p.score?.toFixed(1)} - ${(p.strategy||'original')}</option>`).join('');
+  } catch(e) {}
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
+}
+
+// --- Prompt Detail ---
+async function showPromptDetail(id) {
+  try {
+    const data = await api('/api/prompts/' + id);
+    currentPromptData = data;
+    const el = document.getElementById('prompt-detail-content');
+    const dims = data.evaluations?.map(e => {
+      const ds = e.dimensionScores || e.dimension_scores;
+      if (!ds) return '';
+      return `<div style="margin-top:8px;padding:8px;background:#0d1117;border-radius:4px;">
+        <div class="eval-dim">Accuracy: <span>${ds.accuracy}</span></div>
+        <div class="eval-dim">Format: <span>${ds.format}</span></div>
+        <div class="eval-dim">Consistency: <span>${ds.consistency}</span></div>
+        <div class="eval-dim">Edge Cases: <span>${ds.edgeCases || ds.edge_cases}</span></div>
+        <div style="margin-top:4px;font-size:12px;color:#8b949e;">Score: ${e.score} | Output: ${escapeHtml((e.output||'').slice(0,200))}...</div>
+      </div>`;
+    }).join('') || '';
+
+    el.innerHTML = `
+      <div class="prompt-meta" style="margin-bottom:12px;">
+        <span>Gen ${data.generation}</span>
+        <span>${data.strategy || 'original'}</span>
+        <span>Score: <strong class="${scoreColor(data.score)}">${data.score?.toFixed(2) ?? 'N/A'}</strong></span>
+        ${data.isElite || data.is_elite ? '<span class="elite-badge">ELITE</span>' : ''}
+      </div>
+      <h3>Content</h3>
+      <div class="prompt-detail">${escapeHtml(data.content)}</div>
+      ${data.evaluations?.length ? '<h3 style="margin-top:16px;">Evaluations</h3>' + dims : ''}
+    `;
+    document.getElementById('prompt-detail-modal').classList.add('show');
+  } catch(e) { toast(e.message, true); }
+}
+
+// --- Tags ---
+async function loadTags() {
+  try {
+    const tags = await api('/api/tags');
+    const el = document.getElementById('tag-selector');
+    el.innerHTML = tags.map(cat => `
+      <div class="tag-category">${cat.category}</div>
+      <div class="tag-grid">
+        ${cat.tags.map(t => `<span class="tag ${selectedTags.has(t)?'selected':''}" onclick="toggleTag(this,'${t}')">${t}</span>`).join('')}
+      </div>
+    `).join('');
+  } catch(e) {}
+}
+
+function toggleTag(el, tag) {
+  if (selectedTags.has(tag)) { selectedTags.delete(tag); el.classList.remove('selected'); }
+  else { selectedTags.add(tag); el.classList.add('selected'); }
+}
+
+// --- Evolve ---
+async function runEvolve() {
+  if (selectedTags.size === 0) return toast('Select at least one tag', true);
+  const btn = document.getElementById('btn-evolve');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loading"></span>Evolving...';
+
+  try {
+    const body = {
+      tags: Array.from(selectedTags),
+      note: document.getElementById('evolve-note').value.trim() || undefined,
+      promptId: document.getElementById('evolve-target').value || undefined,
+    };
+    const result = await api('/api/projects/' + currentProject.id + '/evolve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+
+    const resEl = document.getElementById('evolve-result');
+    resEl.innerHTML = `
+      <div class="card">
+        <h3>Evolution Result - Generation ${result.generation}</h3>
+        <p style="font-size:13px;color:#8b949e;margin:8px 0;">
+          New variants: ${result.newVariants.length} | Eliminated: ${result.eliminated}
+        </p>
+        ${result.newVariants.map(v => `
+          <div style="padding:4px 0;font-size:13px;">
+            Variant <span style="color:#58a6ff;cursor:pointer;" onclick="showPromptDetail('${v.id}')">${v.id.slice(0,8)}</span>
+            — Score: <strong class="${scoreColor(v.score)}">${v.score.toFixed(1)}</strong>
+          </div>
+        `).join('')}
+      </div>
+    `;
+    selectedTags.clear();
+    loadTags();
+    loadLeaderboard();
+    toast('Evolution complete! Gen ' + result.generation);
+  } catch(e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = 'Run Evolution'; }
+}
+
+// --- History ---
+async function loadHistory() {
+  if (!currentProject) return;
+  try {
+    const logs = await api('/api/projects/' + currentProject.id + '/history');
+    const el = document.getElementById('history-list');
+    if (logs.length === 0) { el.innerHTML = '<div class="empty">No history yet.</div>'; return; }
+    el.innerHTML = logs.map(l => {
+      const d = l.detail || {};
+      const info = l.eventType === 'initialization'
+        ? `Prompts: ${d.promptCount}, Test cases: ${d.testCaseCount}`
+        : `Tags: [${(d.annotationTags||[]).join(', ')}], New: ${d.newVariants||0}, Eliminated: ${d.eliminated||0}`;
+      return `<div class="log-entry ${l.eventType === 'initialization' ? 'init' : 'evolve'}">
+        <span class="history-gen">Gen ${l.generation}</span>
+        <span class="history-type ${l.eventType}">${l.eventType}</span>
+        <span style="color:#8b949e;margin-left:8px;font-size:12px;">${info}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+// --- Download ---
+let currentPromptData = null;
+
+function downloadFile(filename, content) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function downloadCurrentPrompt() {
+  if (!currentPromptData) return;
+  const d = currentPromptData;
+  const filename = `prompt_gen${d.generation}_${(d.strategy||'original')}_score${d.score?.toFixed(0)}.md`;
+  downloadFile(filename, d.content);
+  toast('Downloaded ' + filename);
+}
+
+async function downloadBest() {
+  if (!currentProject) return;
+  try {
+    const d = await api('/api/projects/' + currentProject.id + '/best');
+    const filename = `best_prompt_score${d.score?.toFixed(0)}.md`;
+    downloadFile(filename, d.content);
+    toast('Downloaded ' + filename);
+  } catch(e) { toast(e.message, true); }
+}
+
+async function downloadAllRanking() {
+  if (!currentProject) return;
+  try {
+    const lb = await api('/api/projects/' + currentProject.id + '/leaderboard');
+    let md = `# Prompt Optimization Results\n\nProject: ${currentProject.name}\n`;
+    md += `Top Score: ${lb.stats.topScore} | Avg: ${lb.stats.avgScore?.toFixed(1)} | Population: ${lb.stats.populationSize}\n\n`;
+    for (const p of lb.prompts) {
+      const detail = await api('/api/prompts/' + p.id);
+      md += `---\n\n## #${p.rank} | Score: ${p.score} | Gen ${p.generation} | ${p.strategy || 'original'}${p.isElite ? ' [ELITE]' : ''}\n\n`;
+      md += detail.content + '\n\n';
+    }
+    downloadFile(`all_prompts_${currentProject.name}.md`, md);
+    toast('Downloaded all prompts');
+  } catch(e) { toast(e.message, true); }
+}
+
+// --- Init ---
+loadProjects();
+</script>
+</body>
+</html>
