@@ -19,10 +19,12 @@ export function getClient(): OpenAI {
 export async function chat(
   systemPrompt: string,
   userMessage: string,
-  options?: { maxTokens?: number; temperature?: number; role?: "generate" | "judge" }
+  options?: { maxTokens?: number; temperature?: number; role?: "generate" | "judge" | "mutate" | "testgen" }
 ): Promise<string> {
-  const model = options?.role === "judge"
-    ? (process.env.JUDGE_MODEL || process.env.LLM_MODEL || DEFAULT_MODEL)
+  const model =
+    options?.role === "judge" ? (process.env.JUDGE_MODEL || process.env.LLM_MODEL || DEFAULT_MODEL)
+    : options?.role === "mutate" ? (process.env.MUTATE_MODEL || process.env.LLM_MODEL || DEFAULT_MODEL)
+    : options?.role === "testgen" ? (process.env.TESTGEN_MODEL || process.env.LLM_MODEL || DEFAULT_MODEL)
     : (process.env.LLM_MODEL || DEFAULT_MODEL);
   const response = await getClient().chat.completions.create({
     model,

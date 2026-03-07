@@ -40,6 +40,7 @@ Rules:
 
   const result = await chat(systemPrompt, `Original prompt:\n\n${input.originalPrompt}`, {
     temperature: 0.8,
+    role: "mutate",
   });
 
   return result.trim();

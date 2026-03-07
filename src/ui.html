@@ -146,7 +146,10 @@ input:focus, textarea:focus { outline: none; border-color: #58a6ff; }
           <div class="form-group"><label>Input</label><textarea id="tc-input" rows="2" placeholder="Test input..."></textarea></div>
           <div class="form-group"><label>Expected Output</label><textarea id="tc-expected" rows="2" placeholder="Expected output..."></textarea></div>
           <div class="form-group"><label>Scoring Criteria</label><input id="tc-criteria" placeholder="e.g. Must be accurate and concise"></div>
-          <button class="btn btn-secondary btn-sm" onclick="addTestCase()">+ Add Test Case</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="addTestCase()">+ 手动添加</button>
+            <button class="btn btn-secondary btn-sm" id="btn-gen-tc" onclick="generateTestCases()" style="background:#1f6feb33;border-color:#58a6ff;color:#58a6ff;">✨ AI 一键生成 10 个</button>
+          </div>
         </div>
         <div class="btn-group">
           <button class="btn btn-primary" id="btn-initialize" onclick="initialize()">Initialize Population</button>
@@ -192,6 +195,33 @@ input:focus, textarea:focus { outline: none; border-color: #58a6ff; }
       <div class="card">
         <h2>Evolution History</h2>
         <div id="history-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generate Test Cases Modal -->
+  <div class="modal-overlay" id="gen-tc-modal">
+    <div class="modal" style="max-width:800px;">
+      <div class="card-header" style="margin-bottom:16px;">
+        <h2>✨ AI 生成测试用例</h2>
+        <button class="btn btn-secondary btn-sm" onclick="hideModal('gen-tc-modal')">关闭</button>
+      </div>
+      <div id="gen-tc-loading" style="text-align:center;padding:40px;display:none;">
+        <span class="loading"></span> 正在用 Claude Opus 生成测试用例，请稍候...
+      </div>
+      <div id="gen-tc-list" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span style="font-size:13px;color:#8b949e;">选择要添加的测试用例</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm" onclick="selectAllGenTc(true)">全选</button>
+            <button class="btn btn-secondary btn-sm" onclick="selectAllGenTc(false)">全不选</button>
+          </div>
+        </div>
+        <div id="gen-tc-items"></div>
+        <div class="btn-group" style="margin-top:16px;">
+          <button class="btn btn-primary" onclick="addSelectedGenTc()">添加选中的用例</button>
+          <button class="btn btn-secondary" onclick="hideModal('gen-tc-modal')">取消</button>
+        </div>
       </div>
     </div>
   </div>
@@ -580,6 +610,78 @@ async function downloadAllRanking() {
     downloadFile(`all_prompts_${currentProject.name}.md`, md);
     toast('Downloaded all prompts');
   } catch(e) { toast(e.message, true); }
+}
+
+// --- Generate Test Cases ---
+let generatedTcList = [];
+
+async function generateTestCases() {
+  const prompt = document.getElementById('original-prompt').value.trim();
+  if (!prompt) return toast('请先输入 Prompt', true);
+
+  document.getElementById('gen-tc-modal').classList.add('show');
+  document.getElementById('gen-tc-loading').style.display = 'block';
+  document.getElementById('gen-tc-list').style.display = 'none';
+
+  const btn = document.getElementById('btn-gen-tc');
+  btn.disabled = true;
+
+  try {
+    const result = await api('/api/projects/' + currentProject.id + '/generate-test-cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    generatedTcList = result.testCases;
+    renderGeneratedTc();
+  } catch (e) {
+    toast(e.message, true);
+    hideModal('gen-tc-modal');
+  } finally {
+    document.getElementById('gen-tc-loading').style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = '✨ AI 一键生成 10 个';
+  }
+}
+
+function renderGeneratedTc() {
+  const diffColor = { easy: '#3fb950', medium: '#d29922', hard: '#f85149' };
+  document.getElementById('gen-tc-items').innerHTML = generatedTcList.map((tc, i) => `
+    <div class="card" style="padding:12px;margin-bottom:8px;">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" class="gen-tc-check" data-idx="${i}" checked style="width:auto;margin-top:3px;">
+        <div style="flex:1;">
+          <div style="display:flex;gap:8px;margin-bottom:6px;">
+            <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:#0d1117;color:${diffColor[tc.difficulty]||'#8b949e'};">${tc.difficulty || 'medium'}</span>
+          </div>
+          <div style="font-size:13px;margin-bottom:4px;"><strong>Input:</strong> ${escapeHtml(tc.input)}</div>
+          <div style="font-size:13px;margin-bottom:4px;color:#8b949e;"><strong>Expected:</strong> ${escapeHtml((tc.expectedOutput||'').slice(0, 150))}${(tc.expectedOutput||'').length > 150 ? '...' : ''}</div>
+          <div style="font-size:12px;color:#58a6ff;"><strong>Criteria:</strong> ${escapeHtml(tc.scoringCriteria)}</div>
+        </div>
+      </label>
+    </div>
+  `).join('');
+  document.getElementById('gen-tc-list').style.display = 'block';
+}
+
+function selectAllGenTc(checked) {
+  document.querySelectorAll('.gen-tc-check').forEach(cb => cb.checked = checked);
+}
+
+async function addSelectedGenTc() {
+  const selected = [...document.querySelectorAll('.gen-tc-check')]
+    .filter(cb => cb.checked)
+    .map(cb => generatedTcList[parseInt(cb.dataset.idx)]);
+
+  if (selected.length === 0) return toast('请至少选择一个', true);
+
+  // Add to local list
+  for (const tc of selected) {
+    testCases.push({ input: tc.input, expectedOutput: tc.expectedOutput, scoringCriteria: tc.scoringCriteria, difficulty: tc.difficulty || 'medium' });
+  }
+  renderTestCases();
+  hideModal('gen-tc-modal');
+  toast(`已添加 ${selected.length} 个测试用例`);
 }
 
 // --- Init ---

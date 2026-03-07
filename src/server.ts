@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 import { db, schema } from "./lib/db/index.js";
 import { eq, desc, and } from "drizzle-orm";
+import { chat } from "./lib/ai/client.js";
 import { mutate, getInitialStrategies } from "./lib/engine/mutator.js";
 import { evaluate, evaluateBatch, computeWeightedAvgScore, type TestCase } from "./lib/engine/evaluator.js";
 import { tagsToInstructions, getAllTags } from "./lib/engine/feedback.js";
@@ -200,6 +201,45 @@ app.get("/api/prompts/:id", (c) => {
 // ========== Annotate & Evolve ==========
 
 app.get("/api/tags", (c) => c.json(getAllTags()));
+
+// ========== Generate Test Cases ==========
+
+app.post("/api/projects/:id/generate-test-cases", async (c) => {
+  const body = await c.req.json();
+  const prompt: string = body.prompt;
+  if (!prompt) return c.json({ error: "prompt is required" }, 400);
+
+  try {
+    const systemPrompt = `You are an expert at creating comprehensive test cases for AI prompts.
+
+Given an AI system prompt, generate exactly 10 diverse test cases that thoroughly evaluate it.
+
+Requirements:
+- Cover typical use cases, edge cases, and adversarial inputs
+- Vary difficulty: include easy, medium, and hard cases
+- Each expectedOutput should be concrete and specific (not vague)
+- scoringCriteria should be measurable and specific to that test case
+
+Respond ONLY with a valid JSON array of exactly 10 objects (no markdown, no explanation):
+[{"input":"...","expectedOutput":"...","scoringCriteria":"...","difficulty":"easy|medium|hard"}, ...]`;
+
+    const raw = await chat(systemPrompt, `System prompt to test:\n\n${prompt}`, {
+      temperature: 0.8,
+      role: "testgen",
+      maxTokens: 8192,
+    });
+
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error("No JSON array found in response");
+    const testCases = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(testCases)) throw new Error("Response is not an array");
+
+    return c.json({ testCases });
+  } catch (err: any) {
+    console.error("Generate test cases error:", err);
+    return c.json({ error: err.message || "Failed to generate test cases" }, 500);
+  }
+});
 
 app.post("/api/projects/:id/evolve", async (c) => {
   const projectId = c.req.param("id");
