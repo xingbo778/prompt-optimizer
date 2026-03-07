@@ -38,6 +38,23 @@ export interface EvaluationResult {
   };
 }
 
+// Concurrency limiter
+async function withConcurrency<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = [];
+  const executing = new Set<Promise<void>>();
+
+  for (const task of tasks) {
+    const p = task().then((r) => { results.push(r); }).catch((e) => { throw e; });
+    const tracked = p.finally(() => executing.delete(tracked));
+    executing.add(tracked);
+    if (executing.size >= limit) await Promise.race(executing);
+  }
+  await Promise.all(executing);
+  return results;
+}
+
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "4");
+
 export async function runPrompt(prompt: string, input: string): Promise<string> {
   const result = await chat(prompt, input, { temperature: 0.3, role: "generate" });
   return result;
@@ -82,7 +99,6 @@ ${actualOutput}`;
   const response = await chat(systemPrompt, userMessage, { temperature: 0.1, role: "judge" });
 
   try {
-    // Extract JSON from response (may have reasoning before it)
     const jsonMatch = response.match(/\{[^{}]*"accuracy"\s*:\s*\d+[^{}]*\}/);
     const jsonStr = jsonMatch ? jsonMatch[0] : response.replace(/```json?\s*/g, "").replace(/```/g, "").trim();
     const scores = JSON.parse(jsonStr);
@@ -114,57 +130,60 @@ async function evaluateOne(prompt: string, tc: TestCase): Promise<EvaluationResu
   return { testCaseId: tc.id, output, score, dimensionScores };
 }
 
-// Evaluate a single prompt against all test cases (parallel)
+// Evaluate a single prompt against all test cases (parallel with concurrency limit)
 export async function evaluate(
   prompt: string,
   testCases: TestCase[]
 ): Promise<EvaluationResult[]> {
-  const results = await Promise.all(testCases.map((tc) => evaluateOne(prompt, tc)));
-  return results;
+  const tasks = testCases.map((tc) => () => evaluateOne(prompt, tc));
+  return withConcurrency(tasks, MAX_CONCURRENT);
 }
 
-// Evaluate multiple prompts in parallel, each against all test cases.
+// Evaluate multiple prompts sequentially (to avoid rate limits), test cases parallel within each.
 // runs > 1: each prompt is evaluated N times and scores are averaged to reduce LLM variance.
 export async function evaluateBatch(
   prompts: { id: string; content: string }[],
   testCases: TestCase[],
   runs = 1
 ): Promise<Map<string, { results: EvaluationResult[]; avgScore: number }>> {
-  const entries = await Promise.all(
-    prompts.map(async (p) => {
-      let results: EvaluationResult[];
+  const map = new Map<string, { results: EvaluationResult[]; avgScore: number }>();
 
-      if (runs <= 1) {
-        results = await evaluate(p.content, testCases);
-      } else {
-        // Run N times in parallel, average scores per test case
-        const allRuns = await Promise.all(
-          Array.from({ length: runs }, () => evaluate(p.content, testCases))
-        );
-        results = testCases.map((tc, i) => {
-          const tcRuns = allRuns.map((run) => run[i]);
-          const avgScore = Math.round((tcRuns.reduce((s, r) => s + r.score, 0) / runs) * 100) / 100;
-          const avgDim = (key: keyof EvaluationResult["dimensionScores"]) =>
-            Math.round((tcRuns.reduce((s, r) => s + r.dimensionScores[key], 0) / runs) * 100) / 100;
-          return {
-            testCaseId: tc.id,
-            output: tcRuns[0].output,
-            score: avgScore,
-            dimensionScores: {
-              accuracy: avgDim("accuracy"),
-              format: avgDim("format"),
-              consistency: avgDim("consistency"),
-              edgeCases: avgDim("edgeCases"),
-            },
-          };
-        });
+  for (const p of prompts) {
+    let results: EvaluationResult[];
+
+    if (runs <= 1) {
+      results = await evaluate(p.content, testCases);
+    } else {
+      // Run N times sequentially, average scores per test case
+      const allRuns: EvaluationResult[][] = [];
+      for (let i = 0; i < runs; i++) {
+        allRuns.push(await evaluate(p.content, testCases));
       }
+      results = testCases.map((tc, i) => {
+        const tcRuns = allRuns.map((run) => run[i]);
+        const avgScore = Math.round((tcRuns.reduce((s, r) => s + r.score, 0) / runs) * 100) / 100;
+        const avgDim = (key: keyof EvaluationResult["dimensionScores"]) =>
+          Math.round((tcRuns.reduce((s, r) => s + r.dimensionScores[key], 0) / runs) * 100) / 100;
+        return {
+          testCaseId: tc.id,
+          output: tcRuns[0].output,
+          score: avgScore,
+          dimensionScores: {
+            accuracy: avgDim("accuracy"),
+            format: avgDim("format"),
+            consistency: avgDim("consistency"),
+            edgeCases: avgDim("edgeCases"),
+          },
+        };
+      });
+    }
 
-      const avgScore = computeWeightedAvgScore(results, testCases);
-      return [p.id, { results, avgScore }] as const;
-    })
-  );
-  return new Map(entries);
+    const avgScore = computeWeightedAvgScore(results, testCases);
+    map.set(p.id, { results, avgScore });
+    console.log(`  Evaluated ${p.id.slice(0, 8)}: ${avgScore}`);
+  }
+
+  return map;
 }
 
 function clamp(v: unknown): number {
