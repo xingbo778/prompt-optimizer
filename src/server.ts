@@ -7,9 +7,9 @@ import { fileURLToPath } from "url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 import { db, schema } from "./lib/db/index.js";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { mutate, getInitialStrategies } from "./lib/engine/mutator.js";
-import { evaluate, evaluateBatch, type TestCase } from "./lib/engine/evaluator.js";
+import { evaluate, evaluateBatch, computeWeightedAvgScore, type TestCase } from "./lib/engine/evaluator.js";
 import { tagsToInstructions, getAllTags } from "./lib/engine/feedback.js";
 import {
   addPrompt,
@@ -121,6 +121,10 @@ app.post("/api/projects/:id/initialize", async (c) => {
   const tcs = getTestCases(projectId);
   if (tcs.length === 0) return c.json({ error: "Add test cases first" }, 400);
 
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  if (!project) return c.json({ error: "Project not found" }, 404);
+  const config = project.config as { evaluationRuns?: number };
+
   try {
     // Add original
     const originalId = addPrompt(projectId, originalPrompt, 0, null, "original");
@@ -142,7 +146,7 @@ app.post("/api/projects/:id/initialize", async (c) => {
       { id: originalId, content: originalPrompt },
       ...variants.map((v) => ({ id: v.id, content: v.content })),
     ];
-    const evalMap = await evaluateBatch(allPrompts, tcs);
+    const evalMap = await evaluateBatch(allPrompts, tcs, config.evaluationRuns ?? 1);
     const results: { id: string; score: number }[] = [];
 
     for (const [pid, { results: evalResults, avgScore }] of evalMap) {
@@ -238,25 +242,29 @@ app.post("/api/projects/:id/evolve", async (c) => {
       .all();
     const generation = logs.length > 0 ? Math.max(...logs.map((l) => l.generation)) + 1 : 1;
 
-    const population = getActivePopulation(projectId);
-    const basePrompt = population[0];
     const mutationCount = config.mutationsPerRound || 3;
+    const runs = config.evaluationRuns ?? 1;
 
-    // Generate mutations (sequential — each sees previous variants to stay diverse)
+    // Use the annotated prompt as mutation base (not necessarily the top-ranked one)
+    const targetPrompt = db.select().from(schema.prompts)
+      .where(eq(schema.prompts.id, targetPromptId)).get()!;
+
+    // Generate mutations sequentially (each sees previous variants to stay diverse).
+    // Insert as inactive until they pass the qualification check.
     const mutatedContents: { id: string; content: string }[] = [];
     for (let i = 0; i < mutationCount; i++) {
       const content = await mutate({
-        originalPrompt: basePrompt.content,
+        originalPrompt: targetPrompt.content,
         optimizationInstructions: instructions,
         strategy: "targeted",
         existingVariants: mutatedContents.map((v) => v.content),
       });
-      const id = addPrompt(projectId, content, generation, basePrompt.id, "targeted");
+      const id = addPrompt(projectId, content, generation, targetPrompt.id, "targeted", false);
       mutatedContents.push({ id, content });
     }
 
     // Evaluate all new variants in parallel
-    const evalMap = await evaluateBatch(mutatedContents, tcs);
+    const evalMap = await evaluateBatch(mutatedContents, tcs, runs);
     const newVariants: { id: string; content: string; score: number }[] = [];
 
     for (const { id, content } of mutatedContents) {
@@ -264,8 +272,9 @@ app.post("/api/projects/:id/evolve", async (c) => {
       updateScore(id, avgScore);
       saveEvaluations(id, evalResults);
 
-      if (!canJoinPopulation(projectId, avgScore, config.topNThreshold || 3)) {
-        db.update(schema.prompts).set({ isActive: false }).where(eq(schema.prompts.id, id)).run();
+      // Qualify against the existing population (new variants are still inactive here)
+      if (canJoinPopulation(projectId, avgScore, config.topNThreshold || 3)) {
+        db.update(schema.prompts).set({ isActive: true }).where(eq(schema.prompts.id, id)).run();
       }
       newVariants.push({ id, content, score: avgScore });
     }
@@ -320,13 +329,14 @@ function getTestCases(projectId: string): TestCase[] {
   return db
     .select()
     .from(schema.testCases)
-    .where(eq(schema.testCases.projectId, projectId))
+    .where(and(eq(schema.testCases.projectId, projectId), eq(schema.testCases.isActive, true)))
     .all()
     .map((tc) => ({
       id: tc.id,
       input: tc.input,
       expectedOutput: tc.expectedOutput,
       scoringCriteria: tc.scoringCriteria,
+      difficulty: tc.difficulty,
     }));
 }
 

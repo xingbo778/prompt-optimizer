@@ -38,7 +38,8 @@ export function addPrompt(
   content: string,
   generation: number,
   parentId: string | null,
-  strategy: string | null
+  strategy: string | null,
+  isActive = true
 ): string {
   const id = uuid();
   db.insert(schema.prompts)
@@ -51,7 +52,7 @@ export function addPrompt(
       strategy,
       score: null,
       isElite: false,
-      isActive: true,
+      isActive,
       createdAt: new Date(),
     })
     .run();
@@ -105,6 +106,13 @@ export function enforcePopulationLimit(projectId: string, maxSize: number): stri
 }
 
 export function markElite(promptId: string): void {
+  const prompt = db.select().from(schema.prompts).where(eq(schema.prompts.id, promptId)).get();
+  if (!prompt) return;
+  // Clear all existing elites in this project before marking the new one
+  db.update(schema.prompts)
+    .set({ isElite: false })
+    .where(eq(schema.prompts.projectId, prompt.projectId))
+    .run();
   db.update(schema.prompts).set({ isElite: true }).where(eq(schema.prompts.id, promptId)).run();
 }
 

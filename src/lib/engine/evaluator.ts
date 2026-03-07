@@ -5,6 +5,25 @@ export interface TestCase {
   input: string;
   expectedOutput: string;
   scoringCriteria: string;
+  difficulty?: string;
+}
+
+const DIFFICULTY_WEIGHTS: Record<string, number> = {
+  easy: 0.5,
+  medium: 1.0,
+  hard: 1.5,
+};
+
+export function computeWeightedAvgScore(results: EvaluationResult[], testCases: TestCase[]): number {
+  const tcMap = new Map(testCases.map((tc) => [tc.id, tc]));
+  let weightedSum = 0;
+  let totalWeight = 0;
+  for (const r of results) {
+    const weight = DIFFICULTY_WEIGHTS[tcMap.get(r.testCaseId)?.difficulty ?? "medium"] ?? 1.0;
+    weightedSum += r.score * weight;
+    totalWeight += weight;
+  }
+  return totalWeight === 0 ? 0 : Math.round((weightedSum / totalWeight) * 100) / 100;
 }
 
 export interface EvaluationResult {
@@ -104,15 +123,44 @@ export async function evaluate(
   return results;
 }
 
-// Evaluate multiple prompts in parallel, each against all test cases
+// Evaluate multiple prompts in parallel, each against all test cases.
+// runs > 1: each prompt is evaluated N times and scores are averaged to reduce LLM variance.
 export async function evaluateBatch(
   prompts: { id: string; content: string }[],
-  testCases: TestCase[]
+  testCases: TestCase[],
+  runs = 1
 ): Promise<Map<string, { results: EvaluationResult[]; avgScore: number }>> {
   const entries = await Promise.all(
     prompts.map(async (p) => {
-      const results = await evaluate(p.content, testCases);
-      const avgScore = Math.round((results.reduce((s, r) => s + r.score, 0) / results.length) * 100) / 100;
+      let results: EvaluationResult[];
+
+      if (runs <= 1) {
+        results = await evaluate(p.content, testCases);
+      } else {
+        // Run N times in parallel, average scores per test case
+        const allRuns = await Promise.all(
+          Array.from({ length: runs }, () => evaluate(p.content, testCases))
+        );
+        results = testCases.map((tc, i) => {
+          const tcRuns = allRuns.map((run) => run[i]);
+          const avgScore = Math.round((tcRuns.reduce((s, r) => s + r.score, 0) / runs) * 100) / 100;
+          const avgDim = (key: keyof EvaluationResult["dimensionScores"]) =>
+            Math.round((tcRuns.reduce((s, r) => s + r.dimensionScores[key], 0) / runs) * 100) / 100;
+          return {
+            testCaseId: tc.id,
+            output: tcRuns[0].output,
+            score: avgScore,
+            dimensionScores: {
+              accuracy: avgDim("accuracy"),
+              format: avgDim("format"),
+              consistency: avgDim("consistency"),
+              edgeCases: avgDim("edgeCases"),
+            },
+          };
+        });
+      }
+
+      const avgScore = computeWeightedAvgScore(results, testCases);
       return [p.id, { results, avgScore }] as const;
     })
   );

@@ -1,9 +1,9 @@
 import { createInterface } from "readline";
 import { v4 as uuid } from "uuid";
 import { db, schema } from "./lib/db/index.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { mutate, getInitialStrategies } from "./lib/engine/mutator.js";
-import { evaluate, type TestCase } from "./lib/engine/evaluator.js";
+import { evaluate, computeWeightedAvgScore, type TestCase } from "./lib/engine/evaluator.js";
 import { tagsToInstructions, getAllTags, type AnnotationData } from "./lib/engine/feedback.js";
 import {
   addPrompt,
@@ -47,13 +47,14 @@ function getTestCases(projectId: string): TestCase[] {
   return db
     .select()
     .from(schema.testCases)
-    .where(eq(schema.testCases.projectId, projectId))
+    .where(and(eq(schema.testCases.projectId, projectId), eq(schema.testCases.isActive, true)))
     .all()
     .map((tc) => ({
       id: tc.id,
       input: tc.input,
       expectedOutput: tc.expectedOutput,
       scoringCriteria: tc.scoringCriteria,
+      difficulty: tc.difficulty,
     }));
 }
 
@@ -158,8 +159,8 @@ async function initialize(projectId: string): Promise<void> {
   for (const p of allPrompts) {
     process.stdout.write(`  Evaluating ${p.label}...`);
     const results = await evaluate(p.content, tcs);
-    const avgScore = results.reduce((s, r) => s + r.score, 0) / results.length;
-    updateScore(p.id, Math.round(avgScore * 100) / 100);
+    const avgScore = computeWeightedAvgScore(results, tcs);
+    updateScore(p.id, avgScore);
     saveEvaluations(p.id, results);
     console.log(` score: ${avgScore.toFixed(2)}`);
   }
@@ -346,8 +347,7 @@ async function evolve(projectId: string, generation: number): Promise<void> {
   for (const v of newVariants) {
     process.stdout.write(`  Evaluating...`);
     const results = await evaluate(v.content, tcs);
-    const avgScore = results.reduce((s, r) => s + r.score, 0) / results.length;
-    const score = Math.round(avgScore * 100) / 100;
+    const score = computeWeightedAvgScore(results, tcs);
     updateScore(v.id, score);
     saveEvaluations(v.id, results);
     console.log(` score: ${score.toFixed(2)}`);
